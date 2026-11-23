@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+##!/usr/bin/env python3
 """
 STAT 404 project: Search algorithm x maze structure on pathfinding efficiency.
 
@@ -19,9 +19,20 @@ Loop density definition (documented choice, change in add_loops if you prefer):
   down D% of the *remaining* interior walls (walls between two adjacent cells
   that are still closed), which creates D% extra passages = loops.
 
+Response (one response variable, as in the proposal)
+  nodes_explored = number of distinct cells the algorithm explores before it
+  reaches the goal (BFS/Dijkstra/A*/greedy: cells expanded; random walk: distinct
+  cells visited).  frac_explored = nodes_explored / size^2, the proportion of the
+  maze explored.  The analysis uses log(frac_explored).
+  time, path length and success are recorded only to check the data.
+
+Random walk
+  Run once per maze (it is one subplot run), capped at rw-cap-factor * n^2 steps.
+  A capped run has success = 0 and nodes_explored is a lower bound (censored).
+
 Usage
-  python run_experiment.py                       # full experiment
-  python run_experiment.py --reps 1 --out test.csv   # quick smoke test
+  python 404.py                          # full experiment (270 mazes, 1350 rows)
+  python 404.py --reps 1 --out test.csv  # quick smoke test
 """
 import argparse, csv, gc, heapq, random, time
 from collections import deque
@@ -220,6 +231,8 @@ def main():
                     help="random-walk step cap = factor * n^2 (censored if hit)")
     ap.add_argument("--timing-repeats", type=int, default=3,
                     help="repeat each (deterministic) solve and keep the median time")
+    ap.add_argument("--warmup", type=int, default=1,
+                    help="untimed warm-up solves before timing (deterministic algorithms)")
     args = ap.parse_args()
 
     master = random.Random(args.seed)
@@ -242,7 +255,11 @@ def main():
         rng = random.Random(m["seed"])
         t0 = time.perf_counter()
         adj = GENERATORS[m["gen"]](m["size"], rng)
+        n_cells = m["size"] ** 2
+        # a generator must give a perfect maze: a spanning tree (n^2 - 1 passages)
+        assert sum(len(a) for a in adj) // 2 == n_cells - 1, "generator did not give a spanning tree"
         m["loops_added"] = add_loops(adj, m["size"], m["density"], rng)
+        assert sum(len(a) for a in adj) // 2 == n_cells - 1 + m["loops_added"]
         m["gen_time"] = time.perf_counter() - t0
         m["adj"] = adj
         m["opt_len"] = solve_bfs(adj, m["size"], 0, m["size"] ** 2 - 1)["path_length"]
@@ -250,7 +267,7 @@ def main():
     # 3. Run every algorithm on every maze, in random algorithm order.
     fields = ["maze_id", "seed", "gen_method", "size", "loop_density", "rep",
               "loops_added", "opt_path_length", "alg_order", "run_position",
-              "algorithm", "time_s", "nodes_explored", "steps", "success",
+              "algorithm", "time_s", "nodes_explored", "frac_explored", "steps", "success",
               "path_length", "gen_time_s"]
     gc_was = gc.isenabled()
     with open(args.out, "w", newline="") as f:
@@ -262,6 +279,9 @@ def main():
                 solver = SOLVERS[name]
                 reps = 1 if name == "random_walk" else args.timing_repeats
                 times = []
+                if name != "random_walk":
+                    for _ in range(args.warmup):        # untimed warm-up
+                        solver(m["adj"], n, s, g, rng=None)
                 gc.collect(); gc.disable()
                 for _ in range(reps):
                     # random walk gets a fresh seeded RNG so it is reproducible
@@ -272,12 +292,16 @@ def main():
                     times.append(time.perf_counter() - t0)
                 if gc_was: gc.enable()
                 times.sort()
+                if name in ("bfs", "dijkstra", "astar"):
+                    assert res["success"] == 1 and res["path_length"] == m["opt_len"], \
+                        f"{name} not optimal on maze {m['maze_id']}"
                 w.writerow(dict(
                     maze_id=m["maze_id"], seed=m["seed"], gen_method=m["gen"],
                     size=n, loop_density=m["density"], rep=m["rep"],
                     loops_added=m["loops_added"], opt_path_length=m["opt_len"],
                     alg_order="-".join(order), run_position=pos, algorithm=name,
                     time_s=times[len(times) // 2], nodes_explored=res["nodes_explored"],
+                    frac_explored=round(res["nodes_explored"] / n ** 2, 6),
                     steps=res["steps"], success=res["success"],
                     path_length=res["path_length"], gen_time_s=m["gen_time"]))
             f.flush()
