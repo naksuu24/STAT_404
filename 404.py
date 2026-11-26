@@ -1,12 +1,12 @@
 ##!/usr/bin/env python3
 """
-STAT 404 project: Search algorithm x maze structure on pathfinding efficiency.
+STAT 404 project: Search algorithm x maze structure on pathfinding efficiency
 
 Design
-  Master seed: 404 (set once at the start)
-  Replicate (block): 5 replicates, each with its own seed drawn from the master seed
+  Master seed: 404, set at the start for reproducibility
+  Replicate (block): 5 replicates, each with its own seed drawn from the master seed (404)
   Treatment factors for the mazes:
-    generation method G in {dfs (recursive backtracking), prim, kruskal}
+    generation method G in {dfs recursive backtracking, prim, kruskal}
     size S in {20, 50, 100}
     loop density D in {5, 15, 30}%
   -> 27 mazes (G x S x D) per replicate, 5 replicates -> 135 mazes
@@ -14,32 +14,27 @@ Design
      Note: within a replicate, the same generator and size give the same
      underlying spanning tree at all 3 densities (loops are added on top).
   Subplot factor: algorithm A in {bfs, dijkstra, astar, greedy, random_walk}
-  Every maze is solved by all 5 algorithms -> 3 x 3 x 3 x 5 x 5 = 675 rows
+  Every maze is solved by all 5 algorithms = 3 x 3 x 3 x 5 x 5 = 675 rows
 
 Randomization
   - each replicate gets a seed drawn from master seed 404 (used for all its mazes)
   - run order of the 135 mazes is shuffled
   - order of the 5 algorithms is shuffled per maze (recorded as alg_order)
 
-Loop density definition (documented choice, change in add_loops if you prefer):
-  A generator makes a perfect maze (a spanning tree, no loops).  We then knock
+Loop density definition (documented choice):
+  A generator makes a perfect maze (a spanning tree, no loops)  We then knock
   down D% of the *remaining* interior walls (walls between two adjacent cells
-  that are still closed), which creates D% extra passages = loops.
+  that are still closed), which creates D% extra passages = loops
 
 Response (one response variable, as in the proposal)
   nodes_explored = number of distinct cells the algorithm explores before it
-  reaches the goal (BFS/Dijkstra/A*/greedy: cells expanded; random walk: distinct
-  cells visited).  frac_explored = nodes_explored / size^2, the proportion of the
-  maze explored.  The analysis uses log(frac_explored).
-  time, path length and success are recorded only to check the data.
+  reaches the goal (BFS/Dijkstra/A*/greedy: cells expanded; random walk: distinct cells visited)  
+  frac_explored = nodes_explored / size^2, the proportion of the maze explored 
+  The analysis uses log(frac_explored) time, path length and success are recorded only to check the data.
 
 Random walk
   Run once per maze (it is one subplot run), capped at rw-cap-factor * n^2 steps.
-  A capped run has success = 0 and nodes_explored is a lower bound (censored).
-
-Usage
-  python 404.py                          # full experiment (135 mazes, 675 rows)
-  python 404.py --reps 1 --out test.csv  # quick smoke test (27 mazes, 135 rows)
+  A capped run has success = 0 and nodes_explored is a lower bound
 """
 import argparse, csv, gc, heapq, random, time
 from collections import deque
@@ -67,9 +62,9 @@ def grid_neighbors(n, i):
 def carve(adj, a, b):
     adj[a].add(b); adj[b].add(a)
 
-# ---- generators (all produce a perfect maze / spanning tree) ---------------
+# ---- Generators (all produce a perfect maze / spanning tree) ---------------
 def gen_dfs(n, rng):
-    """Randomized depth-first search (recursive backtracker), iterative."""
+    """Randomized depth-first search (recursive backtracker), iterative"""
     adj = [set() for _ in range(n * n)]
     seen = [False] * (n * n)
     start = rng.randrange(n * n)
@@ -87,7 +82,7 @@ def gen_dfs(n, rng):
     return adj
 
 def gen_prim(n, rng):
-    """Randomized Prim: random frontier edge that touches the tree."""
+    """Randomized Prim: random frontier edge that touches the tree"""
     adj = [set() for _ in range(n * n)]
     in_tree = [False] * (n * n)
     start = rng.randrange(n * n)
@@ -105,7 +100,7 @@ def gen_prim(n, rng):
     return adj
 
 def gen_kruskal(n, rng):
-    """Randomized Kruskal with union-find."""
+    """Randomized Kruskal with union-find"""
     adj = [set() for _ in range(n * n)]
     parent = list(range(n * n))
     def find(x):
@@ -125,7 +120,7 @@ def gen_kruskal(n, rng):
 GENERATORS = {"dfs": gen_dfs, "prim": gen_prim, "kruskal": gen_kruskal}
 
 def add_loops(adj, n, density, rng):
-    """Open `density` fraction of the still-closed interior walls."""
+    """Open, density, fraction of the still-closed interior walls"""
     closed = [(a, b) for a, b in all_edges(n) if b not in adj[a]]
     k = round(density * len(closed))
     for a, b in rng.sample(closed, k):
@@ -224,7 +219,7 @@ SOLVERS = {"bfs": solve_bfs, "dijkstra": solve_dijkstra, "astar": solve_astar,
            "greedy": solve_greedy, "random_walk": solve_random_walk}
 
 # ----------------------------------------------------------------------------
-# Experiment driver
+# experiment funcs
 #   master seed 404 -> 5 replicate seeds -> one derived seed per maze
 # ----------------------------------------------------------------------------
 SIZES = [20, 50, 100]
