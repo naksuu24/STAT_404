@@ -2,16 +2,23 @@
 """
 STAT 404 project: Search algorithm x maze structure on pathfinding efficiency.
 
-Design (matches proposal)
-  Block (generation method G): dfs (recursive backtracking), prim, kruskal
-  Whole-plot factors: size S in {20, 50, 100}, loop density D in {5, 15, 30}%
-  Replicates: 10 mazes per G x S x D  -> 270 mazes
+Design
+  Master seed: 404 (set once at the start)
+  Replicate (block): 5 replicates, each with its own seed drawn from the master seed
+  Treatment factors for the mazes:
+    generation method G in {dfs (recursive backtracking), prim, kruskal}
+    size S in {20, 50, 100}
+    loop density D in {5, 15, 30}%
+  -> 27 mazes (G x S x D) per replicate, 5 replicates -> 135 mazes
+     All 27 mazes in a replicate use that replicate's seed (seed = block).
+     Note: within a replicate, the same generator and size give the same
+     underlying spanning tree at all 3 densities (loops are added on top).
   Subplot factor: algorithm A in {bfs, dijkstra, astar, greedy, random_walk}
-  Every maze is solved by all 5 algorithms -> 1350 rows
+  Every maze is solved by all 5 algorithms -> 3 x 3 x 3 x 5 x 5 = 675 rows
 
 Randomization
-  - each maze gets its own seed drawn from a master seed (recorded in CSV)
-  - run order of the 270 mazes is shuffled
+  - each replicate gets a seed drawn from master seed 404 (used for all its mazes)
+  - run order of the 135 mazes is shuffled
   - order of the 5 algorithms is shuffled per maze (recorded as alg_order)
 
 Loop density definition (documented choice, change in add_loops if you prefer):
@@ -31,8 +38,8 @@ Random walk
   A capped run has success = 0 and nodes_explored is a lower bound (censored).
 
 Usage
-  python 404.py                          # full experiment (270 mazes, 1350 rows)
-  python 404.py --reps 1 --out test.csv  # quick smoke test
+  python 404.py                          # full experiment (135 mazes, 675 rows)
+  python 404.py --reps 1 --out test.csv  # quick smoke test (27 mazes, 135 rows)
 """
 import argparse, csv, gc, heapq, random, time
 from collections import deque
@@ -218,13 +225,15 @@ SOLVERS = {"bfs": solve_bfs, "dijkstra": solve_dijkstra, "astar": solve_astar,
 
 # ----------------------------------------------------------------------------
 # Experiment driver
+#   master seed 404 -> 5 replicate seeds -> one derived seed per maze
 # ----------------------------------------------------------------------------
 SIZES = [20, 50, 100]
 DENSITIES = [0.05, 0.15, 0.30]
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--reps", type=int, default=10, help="mazes per G x S x D cell")
+    ap.add_argument("--reps", type=int, default=5,
+                    help="number of replicates (each gets its own seed)")
     ap.add_argument("--seed", type=int, default=404, help="master seed")
     ap.add_argument("--out", default="results.csv")
     ap.add_argument("--rw-cap-factor", type=int, default=200,
@@ -235,21 +244,25 @@ def main():
                     help="untimed warm-up solves before timing (deterministic algorithms)")
     args = ap.parse_args()
 
-    master = random.Random(args.seed)
+    master = random.Random(args.seed)          # <- seed 404, set once at the start
 
-    # 1. Build the plan: one entry per maze, each with its own recorded seed.
+    # 1. One seed per replicate (5 different seeds), drawn from the master seed.
+    rep_seeds = [master.getrandbits(32) for _ in range(args.reps)]
+    print("Replicate seeds:", rep_seeds)
+
+    # 2. Plan: every G x S x D cell in every replicate.
+    #    Every maze in a replicate uses that replicate's seed (seed = block).
     plan = []
-    for gen in GENERATORS:
-        for n in SIZES:
-            for d in DENSITIES:
-                for rep in range(1, args.reps + 1):
-                    plan.append(dict(gen=gen, size=n, density=d, rep=rep,
-                                     seed=master.getrandbits(32)))
+    for rep, rseed in enumerate(rep_seeds, 1):
+        for gen in GENERATORS:
+            for n in SIZES:
+                for d in DENSITIES:
+                    plan.append(dict(gen=gen, size=n, density=d, rep=rep, seed=rseed))
     master.shuffle(plan)                       # randomize maze run order
     for i, m in enumerate(plan, 1):
         m["maze_id"] = i                       # id = position in run order
 
-    # 2. Pre-generate all mazes (outside the timed portion).
+    # 3. Pre-generate all mazes (outside the timed portion).
     print(f"Generating {len(plan)} mazes ...")
     for m in plan:
         rng = random.Random(m["seed"])
@@ -262,9 +275,9 @@ def main():
         assert sum(len(a) for a in adj) // 2 == n_cells - 1 + m["loops_added"]
         m["gen_time"] = time.perf_counter() - t0
         m["adj"] = adj
-        m["opt_len"] = solve_bfs(adj, m["size"], 0, m["size"] ** 2 - 1)["path_length"]
+        m["opt_len"] = solve_bfs(adj, m["size"], 0, n_cells - 1)["path_length"]
 
-    # 3. Run every algorithm on every maze, in random algorithm order.
+    # 4. Run every algorithm on every maze, in random algorithm order.
     fields = ["maze_id", "seed", "gen_method", "size", "loop_density", "rep",
               "loops_added", "opt_path_length", "alg_order", "run_position",
               "algorithm", "time_s", "nodes_explored", "frac_explored", "steps", "success",
@@ -284,8 +297,8 @@ def main():
                         solver(m["adj"], n, s, g, rng=None)
                 gc.collect(); gc.disable()
                 for _ in range(reps):
-                    # random walk gets a fresh seeded RNG so it is reproducible
-                    rng = random.Random(m["seed"] * 31 + pos)
+                    # random walk gets its own reproducible RNG (unique per maze)
+                    rng = random.Random(f"{m['seed']}-{m['gen']}-{n}-{m['density']}-{name}")
                     t0 = time.perf_counter()
                     res = solver(m["adj"], n, s, g, rng=rng,
                                  max_steps=args.rw_cap_factor * n * n)
@@ -296,8 +309,8 @@ def main():
                     assert res["success"] == 1 and res["path_length"] == m["opt_len"], \
                         f"{name} not optimal on maze {m['maze_id']}"
                 w.writerow(dict(
-                    maze_id=m["maze_id"], seed=m["seed"], gen_method=m["gen"],
-                    size=n, loop_density=m["density"], rep=m["rep"],
+                    maze_id=m["maze_id"], seed=m["seed"],
+                    gen_method=m["gen"], size=n, loop_density=m["density"], rep=m["rep"],
                     loops_added=m["loops_added"], opt_path_length=m["opt_len"],
                     alg_order="-".join(order), run_position=pos, algorithm=name,
                     time_s=times[len(times) // 2], nodes_explored=res["nodes_explored"],
